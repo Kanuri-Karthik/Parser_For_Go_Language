@@ -1,0 +1,66 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one concurrent Pages deployment at a time
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build WASM & prepare Pages
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Build WebAssembly binary
+        env:
+          GOOS: js
+          GOARCH: wasm
+          CGO_ENABLED: '0'
+        run: |
+          go build -ldflags="-s -w" -o docs/parser.wasm .
+          echo "WASM binary size: $(du -sh docs/parser.wasm | cut -f1)"
+
+      - name: Copy wasm_exec.js runtime
+        run: |
+          cp "$(go env GOROOT)/misc/wasm/wasm_exec.js" docs/wasm_exec.js
+          echo "Copied wasm_exec.js from $(go env GOROOT)/misc/wasm/"
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

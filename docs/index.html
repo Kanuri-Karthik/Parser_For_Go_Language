@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Robust Go Parser &amp; AST Engine — Live Playground</title>
+<meta name="description" content="An interactive, in-browser Go parser playground powered by WebAssembly. Parse Go source code, visualise the AST tree, inspect token streams, and evaluate programs live.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #080e1a;
+    --surface:   #0f1829;
+    --surface2:  #162035;
+    --border:    #1e2d47;
+    --border2:   #243552;
+    --accent:    #38bdf8;
+    --accent2:   #0ea5e9;
+    --green:     #4ade80;
+    --red:       #f87171;
+    --cyan:      #67e8f9;
+    --muted:     #64748b;
+    --text:      #e2e8f0;
+    --text-dim:  #94a3b8;
+    --mono:      "JetBrains Mono", Consolas, monospace;
+  }
+
+  body {
+    font-family: "Inter", -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── Loading overlay ── */
+  #loading-overlay {
+    position: fixed; inset: 0; z-index: 999;
+    background: var(--bg);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 20px;
+    transition: opacity 0.4s ease;
+  }
+  #loading-overlay.hidden { opacity: 0; pointer-events: none; }
+  .loader-logo {
+    font-size: 2rem; font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--cyan));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    letter-spacing: -0.5px;
+  }
+  .loader-sub { color: var(--text-dim); font-size: 0.9rem; }
+  .loader-bar {
+    width: 220px; height: 4px; background: var(--surface2);
+    border-radius: 999px; overflow: hidden;
+  }
+  .loader-bar-fill {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--cyan));
+    border-radius: 999px;
+    animation: loadpulse 1.4s ease-in-out infinite;
+  }
+  @keyframes loadpulse {
+    0%   { width: 10%; margin-left: 0%; }
+    50%  { width: 60%; margin-left: 20%; }
+    100% { width: 10%; margin-left: 80%; }
+  }
+
+  /* ── Header ── */
+  header {
+    background: var(--surface);
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+    gap: 12px;
+  }
+  .header-left { display: flex; align-items: center; gap: 14px; }
+  .logo {
+    font-size: 1.1rem; font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--cyan));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    white-space: nowrap;
+  }
+  .badge {
+    font-size: 0.7rem; font-weight: 600; letter-spacing: 0.5px;
+    padding: 2px 8px; border-radius: 999px;
+    background: rgba(56,189,248,0.12); color: var(--accent);
+    border: 1px solid rgba(56,189,248,0.25);
+  }
+  .header-sub { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+
+  .btn-group { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button {
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border2);
+    padding: 6px 14px; border-radius: 7px;
+    cursor: pointer; font-size: 0.83rem;
+    font-family: "Inter", sans-serif; font-weight: 500;
+    transition: all 0.15s ease; white-space: nowrap;
+  }
+  button:hover { background: var(--border); border-color: var(--accent2); }
+  button.primary {
+    background: linear-gradient(135deg, #0284c7, #0369a1);
+    border-color: var(--accent); color: #fff; font-weight: 600;
+  }
+  button.primary:hover { background: linear-gradient(135deg, #0369a1, #075985); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  select {
+    background: var(--surface); color: var(--accent);
+    border: 1px solid var(--accent2); padding: 6px 12px;
+    border-radius: 7px; font-family: "Inter", sans-serif;
+    font-size: 0.83rem; font-weight: 600; cursor: pointer; outline: none;
+    transition: border-color 0.15s;
+  }
+  select:hover { border-color: var(--accent); }
+
+  /* ── Main layout ── */
+  .workspace {
+    display: flex; flex: 1; overflow: hidden;
+  }
+
+  /* ── Editor pane ── */
+  .editor-pane {
+    display: flex; flex-direction: column;
+    width: 50%; border-right: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .pane-header {
+    background: var(--surface); padding: 8px 16px;
+    font-size: 0.75rem; font-weight: 600; color: var(--text-dim);
+    letter-spacing: 0.8px; text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+    flex-shrink: 0;
+  }
+  .editor-wrapper {
+    display: flex; flex: 3; overflow: hidden;
+    background: var(--bg);
+  }
+  .line-numbers {
+    width: 46px; min-width: 46px;
+    background: #0b1220;
+    color: var(--muted);
+    font-family: var(--mono); font-size: 0.9rem; line-height: 1.55;
+    padding: 14px 0;
+    text-align: right;
+    user-select: none;
+    border-right: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .line-num {
+    display: block; padding: 0 8px;
+    height: 1.55em; line-height: 1.55em;
+    transition: background 0.1s;
+  }
+  .line-num.has-error {
+    color: var(--red); font-weight: 700;
+    background: rgba(248,113,113,0.18);
+    border-left: 3px solid #ef4444;
+    padding-left: 5px;
+  }
+  .code-area {
+    flex: 1;
+    background: transparent; color: var(--text);
+    font-family: var(--mono); font-size: 0.9rem; line-height: 1.55;
+    padding: 14px;
+    border: none; resize: none; outline: none;
+    tab-size: 4; white-space: pre; word-wrap: normal;
+    overflow: auto; box-sizing: border-box;
+    caret-color: var(--accent);
+  }
+  .stdin-section { flex-shrink: 0; }
+  .stdin-area {
+    background: #0c1525; color: var(--text);
+    font-family: var(--mono); font-size: 0.88rem; line-height: 1.55;
+    padding: 10px 14px;
+    border: none; resize: none; outline: none;
+    tab-size: 4; width: 100%;
+    min-height: 60px; max-height: 110px;
+    border-top: 1px solid var(--border);
+    box-sizing: border-box;
+    caret-color: var(--accent);
+  }
+
+  /* ── Output pane ── */
+  .output-pane {
+    display: flex; flex-direction: column; flex: 1; overflow: hidden;
+  }
+  .tabs { display: flex; gap: 3px; }
+  .tab-btn {
+    background: transparent; border: none;
+    padding: 4px 11px; border-radius: 5px;
+    color: var(--text-dim); font-size: 0.78rem; cursor: pointer;
+    font-family: "Inter", sans-serif; font-weight: 500;
+    transition: all 0.15s;
+  }
+  .tab-btn:hover { background: var(--surface2); color: var(--text); }
+  .tab-btn.active { background: var(--border2); color: var(--accent); font-weight: 600; }
+  .tab-btn.error  { color: var(--red); }
+
+  pre#output {
+    flex: 1; background: var(--bg); color: var(--text);
+    padding: 14px; overflow: auto;
+    font-family: var(--mono); font-size: 0.88rem; line-height: 1.6;
+    white-space: pre; margin: 0;
+    border: none;
+  }
+  pre#output.exec   { color: var(--green); }
+  pre#output.ast    { color: var(--cyan); }
+  pre#output.tokens { color: var(--accent); }
+  pre#output.diag   { color: var(--red); }
+
+  /* ── GitHub link ── */
+  .gh-link {
+    color: var(--text-dim); text-decoration: none; font-size: 0.82rem;
+    display: flex; align-items: center; gap: 5px;
+    transition: color 0.15s;
+  }
+  .gh-link:hover { color: var(--accent); }
+  .gh-link svg { width: 16px; height: 16px; fill: currentColor; }
+
+  /* ── Spinner in run button ── */
+  .spin { display: inline-block; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Status indicator ── */
+  .wasm-status {
+    font-size: 0.72rem; padding: 2px 8px; border-radius: 999px;
+    font-weight: 600; letter-spacing: 0.3px;
+  }
+  .wasm-status.loading { background: rgba(251,191,36,0.12); color: #fbbf24; border: 1px solid rgba(251,191,36,0.25); }
+  .wasm-status.ready   { background: rgba(74,222,128,0.12); color: var(--green); border: 1px solid rgba(74,222,128,0.25); }
+  .wasm-status.error   { background: rgba(248,113,113,0.12); color: var(--red); border: 1px solid rgba(248,113,113,0.25); }
+
+  /* ── Responsive ── */
+  @media (max-width: 700px) {
+    .workspace { flex-direction: column; }
+    .editor-pane { width: 100%; border-right: none; border-bottom: 1px solid var(--border); height: 55vh; }
+    .output-pane { height: 45vh; }
+    .header-sub, .badge { display: none; }
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+</style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loading-overlay">
+  <div class="loader-logo">Go Parser &amp; AST Engine</div>
+  <div class="loader-sub">Loading WebAssembly runtime…</div>
+  <div class="loader-bar"><div class="loader-bar-fill"></div></div>
+</div>
+
+<!-- Header -->
+<header>
+  <div class="header-left">
+    <span class="logo">Go Parser &amp; AST Engine</span>
+    <span class="badge">WASM</span>
+    <span class="header-sub">Pratt Parser · Panic-Mode Recovery · In-Browser</span>
+  </div>
+  <div class="btn-group">
+    <span id="wasm-status" class="wasm-status loading">Loading…</span>
+    <select id="sample-select" onchange="loadPreset(this.value)">
+      <option value="basic">Sample: Scan &amp; Math</option>
+      <option value="realtime">Sample: Maps, Methods &amp; StdLib</option>
+      <option value="structs">Sample: Structs &amp; Fields</option>
+      <option value="switch">Sample: Switch Statement</option>
+      <option value="slices">Sample: For-Range &amp; Slices</option>
+      <option value="defer">Sample: Defer LIFO</option>
+      <option value="recovery">Sample: Broken Code (Error Recovery)</option>
+    </select>
+    <button onclick="clearAll()">Clear</button>
+    <button onclick="resetDefault()">Reset</button>
+    <a href="https://github.com/Kanuri-Karthik/Parser_For_Go_Language" target="_blank" class="gh-link" title="View on GitHub">
+      <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+    <button id="run-btn" class="primary" onclick="runCode()" disabled>
+      ▶ Run / Parse <span style="font-size:0.72rem;font-weight:400;margin-left:4px;">(Ctrl+Enter)</span>
+    </button>
+  </div>
+</header>
+
+<!-- Main workspace -->
+<div class="workspace">
+
+  <!-- Left: Editor -->
+  <div class="editor-pane">
+    <div class="pane-header">
+      <span>SOURCE CODE</span>
+      <span id="error-count" style="color:var(--red);font-size:0.72rem;"></span>
+    </div>
+    <div class="editor-wrapper">
+      <div class="line-numbers" id="line-numbers">1</div>
+      <textarea id="code" class="code-area" spellcheck="false" autocorrect="off" autocapitalize="off"></textarea>
+    </div>
+    <div class="stdin-section">
+      <div class="pane-header">PROGRAM INPUT (STDIN)</div>
+      <textarea id="stdin" class="stdin-area" spellcheck="false" placeholder="Enter input for fmt.Scan / fmt.Scanf  (e.g. 5)"></textarea>
+    </div>
+  </div>
+
+  <!-- Right: Output -->
+  <div class="output-pane">
+    <div class="pane-header">
+      <span>OUTPUT</span>
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="exec"   onclick="switchTab('exec')">Output</button>
+        <button class="tab-btn"        data-tab="ast"    onclick="switchTab('ast')">AST Tree</button>
+        <button class="tab-btn"        data-tab="tokens" onclick="switchTab('tokens')">Tokens</button>
+        <button class="tab-btn"        data-tab="diag"   id="tab-diag" onclick="switchTab('diag')">Diagnostics</button>
+        <button class="tab-btn"        data-tab="grammar" onclick="switchTab('grammar')">Grammar</button>
+      </div>
+    </div>
+    <pre id="output" class="exec"></pre>
+  </div>
+
+</div>
+
+<!-- Go WASM runtime -->
+<script src="wasm_exec.js"></script>
+<script>
+// ── Preset samples (mirroring Go server's presetSamples) ──────────────────
+const presetSamples = {
+  basic: {
+    code: `package main
+
+import "fmt"
+
+func main() {
+\tvar n int
+
+\tfmt.Print("Enter a number: ")
+\tfmt.Scan(&n)
+
+\tif n%2 == 0 {
+\t\tfmt.Println(n, "is even")
+\t} else {
+\t\tfmt.Println(n, "is odd")
+\t}
+
+\tsum := 0
+\tfor i := 1; i <= n; i++ {
+\t\tsum += i
+\t}
+
+\tfmt.Println("Sum:", sum)
+}`,
+    stdin: "5"
+  },
+  realtime: {
+    code: `package main
+
+type Counter struct {
+\ttotal int
+}
+
+func (c Counter) Add(val int) int {
+\treturn c.total + val
+}
+
+func swapAndDivide(a, b int) (int, int) {
+\treturn b, a / b
+}
+
+func main() {
+\t// Multi-assign and simultaneous swapping
+\tx, y := 10, 20
+\tx, y = y, x
+\tfmt.Printf("1. Swapped: x=%d y=%d\\n", x, y)
+
+\t// Multi-return function
+\ts, d := swapAndDivide(5, 25)
+\tfmt.Printf("2. SwapAndDivide: s=%d d=%d\\n", s, d)
+
+\t// Map operations
+\tm := make(map[string]int)
+\tm["golang"] = 2009
+\tm["antigravity"] = 2026
+\tdelete(m, "golang")
+\tfmt.Printf("3. Map len: %d, antigravity: %d\\n", len(m), m["antigravity"])
+
+\t// Struct receiver methods
+\tc := Counter{total: 100}
+\tfmt.Printf("4. Counter.Add(50): %d\\n", c.Add(50))
+
+\t// Standard library
+\tfmt.Printf("5. Math Sqrt(144): %.1f\\n", math.Sqrt(144.0))
+\tfmt.Printf("6. Strings ToUpper: %s\\n", strings.ToUpper("realtime go engine"))
+\tfmt.Printf("7. Strconv Itoa: %s\\n", strconv.Itoa(9999))
+
+\t// Go 1.22+ Integer range
+\tsum := 0
+\tfor i := range 5 {
+\t\tsum += i
+\t}
+\tfmt.Printf("8. Range 5 sum: %d\\n", sum)
+}`,
+    stdin: ""
+  },
+  structs: {
+    code: `package main
+
+type User struct {
+\tName string
+\tAge  int
+\tRole string
+}
+
+func main() {
+\tu := User{Name: "Alice", Age: 24, Role: "Engineer"}
+\tprintln("Initial:", u.Name, u.Age, u.Role)
+
+\tu.Age = 25
+\tu.Role = "Tech Lead"
+\tprintln("Updated:", u.Name, u.Age, u.Role)
+}`,
+    stdin: ""
+  },
+  switch: {
+    code: `package main
+
+func main() {
+\tscore := 85
+\tswitch {
+\tcase score >= 90:
+\t\tprintln("Grade: A")
+\tcase score >= 80:
+\t\tprintln("Grade: B")
+\tcase score >= 70:
+\t\tprintln("Grade: C")
+\tdefault:
+\t\tprintln("Grade: F")
+\t}
+
+\tday := 3
+\tswitch day {
+\tcase 1, 2, 3, 4, 5:
+\t\tprintln("Day", day, "is a Weekday")
+\tcase 6, 7:
+\t\tprintln("Day", day, "is a Weekend")
+\t}
+}`,
+    stdin: ""
+  },
+  slices: {
+    code: `package main
+
+func main() {
+\tnums := []int{10, 20, 30, 40, 50}
+\tprintln("Original slice length:", len(nums))
+
+\tsum := 0
+\tfor idx, val := range nums {
+\t\tprintln("nums[", idx, "] =", val)
+\t\tsum += val
+\t}
+\tprintln("Total Sum:", sum)
+
+\tsub := nums[1:4]
+\tprintln("Subslice [1:4]:", sub[0], sub[1], sub[2])
+
+\textended := append(sub, 999)
+\tprintln("Appended slice length:", len(extended))
+\tprintln("Appended item:", extended[3])
+}`,
+    stdin: ""
+  },
+  defer: {
+    code: `package main
+
+func cleanup() {
+\tdefer println("Cleanup: Step 1 (executed last)")
+\tdefer println("Cleanup: Step 2")
+\tdefer println("Cleanup: Step 3 (executed first)")
+\tprintln("--> Main operation working...")
+}
+
+func main() {
+\tcleanup()
+\tprintln("--> Function returned successfully")
+}`,
+    stdin: ""
+  },
+  recovery: {
+    code: `package main
+
+var x int = 
+var y int 10
+func calc(a int, ) int {
+\tif a > 0 
+\t\treturn a
+\t}
+\treturn
+}`,
+    stdin: ""
+  }
+};
+
+const defaultKey   = 'basic';
+const defaultCode  = presetSamples[defaultKey].code;
+const defaultStdin = presetSamples[defaultKey].stdin;
+
+// ── State ────────────────────────────────────────────────────────────────
+let wasmReady      = false;
+let currentTab     = 'exec';
+let lastResponse   = null;
+let grammarText    = '(* Grammar loading… *)';
+let currentErrLines = [];
+
+// ── WASM Initialisation ──────────────────────────────────────────────────
+async function initWasm() {
+  try {
+    const go = new Go();
+    const wasmUrl = new URL('parser.wasm', window.location.href).href;
+    const result = await WebAssembly.instantiateStreaming(fetch(wasmUrl), go.importObject);
+    go.run(result.instance);
+    wasmReady = true;
+    grammarText = goGetGrammar();
+    document.getElementById('wasm-status').textContent = 'WASM Ready';
+    document.getElementById('wasm-status').className   = 'wasm-status ready';
+    document.getElementById('run-btn').disabled = false;
+    hideLoader();
+    // Auto-run the default program
+    runCode();
+  } catch (e) {
+    console.error('WASM init failed:', e);
+    document.getElementById('wasm-status').textContent = 'WASM Error';
+    document.getElementById('wasm-status').className   = 'wasm-status error';
+    document.getElementById('loading-overlay').innerHTML =
+      `<div style="color:var(--red);font-size:1rem;text-align:center;max-width:380px;padding:20px;">
+        ⚠️ Failed to load WebAssembly module.<br>
+        <span style="color:var(--text-dim);font-size:0.85rem;">${e.message}</span><br><br>
+        <a href="https://github.com/Kanuri-Karthik/Parser_For_Go_Language" style="color:var(--accent);">View on GitHub</a>
+       </div>`;
+  }
+}
+
+function hideLoader() {
+  const el = document.getElementById('loading-overlay');
+  el.classList.add('hidden');
+  setTimeout(() => el.style.display = 'none', 450);
+}
+
+// ── Run ──────────────────────────────────────────────────────────────────
+function runCode() {
+  if (!wasmReady) return;
+
+  const code  = document.getElementById('code').value;
+  const stdin = document.getElementById('stdin').value;
+  const btn   = document.getElementById('run-btn');
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin">⟳</span> Running…';
+
+  // Schedule WASM call in next tick so UI updates first
+  setTimeout(() => {
+    try {
+      const jsonStr    = goParseAndRun(code, stdin);
+      lastResponse     = JSON.parse(jsonStr);
+      const diagBtn    = document.getElementById('tab-diag');
+      const errCount   = document.getElementById('error-count');
+
+      if (lastResponse.has_errors) {
+        const cnt = (lastResponse.diagnostics.match(/error\[/g) || []).length;
+        diagBtn.textContent = `Diagnostics (${cnt})`;
+        diagBtn.className   = 'tab-btn error';
+        errCount.textContent = cnt + ' error' + (cnt !== 1 ? 's' : '');
+        updateLineNumbers(lastResponse.error_lines || []);
+      } else {
+        diagBtn.textContent = 'Diagnostics';
+        diagBtn.className   = 'tab-btn';
+        errCount.textContent = '';
+        updateLineNumbers([]);
+      }
+      renderOutput();
+    } catch (e) {
+      document.getElementById('output').textContent = 'Internal error: ' + e;
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '▶ Run / Parse <span style="font-size:0.72rem;font-weight:400;margin-left:4px;">(Ctrl+Enter)</span>';
+    }
+  }, 10);
+}
+
+// ── Render output ────────────────────────────────────────────────────────
+function renderOutput() {
+  const el = document.getElementById('output');
+  if (currentTab === 'grammar') {
+    el.className = 'ast';
+    el.textContent = grammarText;
+    return;
+  }
+  if (!lastResponse) return;
+  el.className = '';
+  if (currentTab === 'exec') {
+    if (lastResponse.has_errors) {
+      el.className   = 'diag';
+      el.textContent = lastResponse.output;
+    } else {
+      el.className = 'exec';
+      let text = '';
+      if (lastResponse.output)  text += lastResponse.output + '\n';
+      if (lastResponse.result)  text += '=> Result: ' + lastResponse.result;
+      if (!text.trim())         text  = '(Program completed with no output)';
+      el.textContent = text;
+    }
+  } else if (currentTab === 'ast') {
+    el.className   = 'ast';
+    el.textContent = lastResponse.ast || '(No AST generated)';
+  } else if (currentTab === 'tokens') {
+    el.className   = 'tokens';
+    el.textContent = lastResponse.tokens || '(No tokens)';
+  } else if (currentTab === 'diag') {
+    if (lastResponse.has_errors) {
+      el.className   = 'diag';
+      el.textContent = lastResponse.diagnostics;
+    } else {
+      el.className   = 'exec';
+      el.textContent = '✓ No syntax errors found. Source parsed cleanly.';
+    }
+  }
+}
+
+// ── Tab switching ────────────────────────────────────────────────────────
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    if (btn.dataset.tab === tab) btn.classList.add('active');
+    else btn.classList.remove('active');
+  });
+  renderOutput();
+}
+
+// ── Line numbers ─────────────────────────────────────────────────────────
+function updateLineNumbers(errorLines) {
+  if (errorLines !== undefined) currentErrLines = errorLines;
+  const code      = document.getElementById('code').value;
+  const lineCount = Math.max(1, code.split('\n').length);
+  const lnEl      = document.getElementById('line-numbers');
+  const errSet    = new Set(currentErrLines);
+  let html = '';
+  for (let i = 1; i <= lineCount; i++) {
+    const isErr = errSet.has(i);
+    html += `<span class="line-num${isErr ? ' has-error' : ''}"${isErr ? ` title="Error on line ${i}"` : ''}>${i}</span>`;
+  }
+  lnEl.innerHTML  = html;
+  lnEl.scrollTop  = document.getElementById('code').scrollTop;
+}
+
+// ── Presets ───────────────────────────────────────────────────────────────
+function loadPreset(key) {
+  const p = presetSamples[key];
+  if (!p) return;
+  document.getElementById('code').value  = p.code;
+  document.getElementById('stdin').value = p.stdin || '';
+  localStorage.setItem('go_code',  p.code);
+  localStorage.setItem('go_stdin', p.stdin || '');
+  updateLineNumbers([]);
+  runCode();
+}
+
+function clearAll() {
+  document.getElementById('code').value  = '';
+  document.getElementById('stdin').value = '';
+  localStorage.removeItem('go_code');
+  localStorage.removeItem('go_stdin');
+  document.getElementById('output').textContent = '';
+  document.getElementById('error-count').textContent = '';
+  lastResponse = null;
+  updateLineNumbers([]);
+  const diagBtn = document.getElementById('tab-diag');
+  diagBtn.textContent = 'Diagnostics';
+  diagBtn.className   = 'tab-btn';
+}
+
+function resetDefault() {
+  document.getElementById('sample-select').value = defaultKey;
+  document.getElementById('code').value          = defaultCode;
+  document.getElementById('stdin').value         = defaultStdin;
+  localStorage.removeItem('go_code');
+  localStorage.removeItem('go_stdin');
+  updateLineNumbers([]);
+  runCode();
+}
+
+// ── Editor events ─────────────────────────────────────────────────────────
+window.onload = () => {
+  const savedCode  = localStorage.getItem('go_code');
+  const savedStdin = localStorage.getItem('go_stdin');
+  document.getElementById('code').value  = savedCode  !== null ? savedCode  : defaultCode;
+  document.getElementById('stdin').value = savedStdin !== null ? savedStdin : defaultStdin;
+  updateLineNumbers([]);
+  initWasm();
+};
+
+const codeArea  = document.getElementById('code');
+const lineNumEl = document.getElementById('line-numbers');
+
+codeArea.addEventListener('scroll', () => { lineNumEl.scrollTop = codeArea.scrollTop; });
+codeArea.addEventListener('input',  (e) => {
+  localStorage.setItem('go_code', e.target.value);
+  updateLineNumbers();
+});
+codeArea.addEventListener('paste', () => setTimeout(updateLineNumbers, 0));
+document.getElementById('stdin').addEventListener('input', (e) => {
+  localStorage.setItem('go_stdin', e.target.value);
+});
+
+// Tab key inserts a tab character
+codeArea.addEventListener('keydown', function(e) {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const s = this.selectionStart, end = this.selectionEnd;
+    this.value = this.value.substring(0, s) + '\t' + this.value.substring(end);
+    this.selectionStart = this.selectionEnd = s + 1;
+    localStorage.setItem('go_code', this.value);
+    updateLineNumbers();
+  }
+});
+
+// Ctrl+Enter to run
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    runCode();
+  }
+});
+</script>
+</body>
+</html>
