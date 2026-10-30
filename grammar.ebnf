@@ -1,0 +1,126 @@
+(* =========================================================================
+   Formal EBNF Grammar Specification for Robust Go Parser & AST Engine
+   Subset: Declarations, Control Flow, Pratt Expressions, and ASI
+   Format: ISO/IEC 14977 & Go Language Specification EBNF
+   ========================================================================= *)
+
+(* ========================== 1. SOURCE FILE & PACKAGES ========================== *)
+
+SourceFile       = [ PackageClause ] { TopLevelDecl } EOF ;
+PackageClause    = "package" PackageName ( ";" | "\n" ) ;
+PackageName      = IDENT ;
+
+TopLevelDecl     = ImportDecl
+                 | VarDecl
+                 | FuncDecl
+                 | Stmt ;
+
+(* ========================== 2. IMPORT DECLARATIONS ========================== *)
+
+ImportDecl       = "import" ( ImportSpec | "(" { ImportSpec ( ";" | "\n" ) } ")" ) ;
+ImportSpec       = [ "." | IDENT ] ImportPath ;
+ImportPath       = STRING ;
+
+(* ========================== 3. VARIABLE DECLARATIONS ========================== *)
+
+VarDecl          = "var" IdentifierList [ Type ] [ "=" ExpressionList ] ;
+IdentifierList   = IDENT { "," IDENT } ;
+Type             = IDENT ;
+ExpressionList   = Expression { "," Expression } ;
+
+(* ========================== 4. FUNCTION DECLARATIONS ========================== *)
+
+FuncDecl         = "func" FunctionName Signature [ Block ] ;
+FunctionName     = IDENT ;
+Signature        = Parameters [ Result ] ;
+Parameters       = "(" [ ParameterList ] ")" ;
+ParameterList    = ParameterDecl { "," ParameterDecl } ;
+ParameterDecl    = [ IdentifierList ] Type ;
+Result           = Type | "(" [ ParameterList ] ")" ;
+
+(* ========================== 5. BLOCKS & STATEMENTS ========================== *)
+
+Block            = "{" StatementList "}" ;
+StatementList    = { Stmt ( ";" | "\n" ) } ;
+
+Stmt             = DeclarationStmt
+                 | SimpleStmt
+                 | IfStmt
+                 | ForStmt
+                 | ReturnStmt
+                 | BranchStmt
+                 | Block
+                 | EmptyStmt ;
+
+DeclarationStmt  = VarDecl ;
+EmptyStmt        = (* empty *) ;
+
+SimpleStmt       = ShortVarDecl
+                 | Assignment
+                 | IncDecStmt
+                 | ExpressionStmt ;
+
+ShortVarDecl     = Expression ":=" Expression ;
+Assignment       = Expression assign_op Expression ;
+assign_op        = "=" | "+=" | "-=" | "*=" | "/=" ;
+
+IncDecStmt       = Expression ( "++" | "--" ) ;
+ExpressionStmt   = Expression ;
+
+BranchStmt       = "break" | "continue" ;
+ReturnStmt       = "return" [ ExpressionList ] ;
+
+(* ========================== 6. CONTROL FLOW ========================== *)
+
+IfStmt           = "if" [ SimpleStmt ";" ] Expression Block [ "else" ( IfStmt | Block ) ] ;
+
+ForStmt          = "for" [ ForClause | Expression ] Block ;
+ForClause        = [ SimpleStmt ] ";" [ Expression ] ";" [ SimpleStmt ] ;
+
+(* ========================== 7. PRATT EXPRESSIONS ========================== *)
+
+Expression       = BinaryExpr | UnaryExpr | PrimaryExpr ;
+
+UnaryExpr        = unary_op Expression ;
+unary_op         = "+" | "-" | "!" | "^" | "*" | "&" ;   (* Binding power: 60 *)
+
+BinaryExpr       = Expression binary_op Expression ;
+binary_op        = rel_op | add_op | mul_op | log_or | log_and ;
+
+log_or           = "||" ;                                (* Level 1: Left BP 10, Right BP 11 *)
+log_and          = "&&" ;                                (* Level 2: Left BP 20, Right BP 21 *)
+rel_op           = "==" | "!=" | "<" | "<=" | ">" | ">=" ;(* Level 3: Left BP 30, Right BP 31 *)
+add_op           = "+" | "-" | "|" | "^" ;               (* Level 4: Left BP 40, Right BP 41 *)
+mul_op           = "*" | "/" | "%" | "<<" | ">>" | "&" | "&^" ; (* Level 5: Left BP 50, Right BP 51 *)
+
+PrimaryExpr      = Operand { Selector | Index | Arguments } ; (* Postfix BP: 70 *)
+Selector         = "." IDENT ;
+Index            = "[" Expression "]" ;
+Arguments        = "(" [ ExpressionList ] ")" ;
+
+Operand          = IDENT
+                 | Literal
+                 | "(" Expression ")" ;
+
+Literal          = INT | FLOAT | STRING ;
+
+(* ========================== 8. LEXICAL TOKENS ========================== *)
+
+IDENT            = letter { letter | unicode_digit } ;
+INT              = decimal_digits ;
+FLOAT            = decimal_digits "." [ decimal_digits ] ;
+STRING           = `"` { unicode_char - (`"` | `\`) | escaped_char } `"` ;
+
+letter           = "A" .. "Z" | "a" .. "z" | "_" ;
+decimal_digits   = { "0" .. "9" }+ ;
+unicode_char     = (* Any valid UTF-8 character *) ;
+escaped_char     = `\` ( `a` | `b` | `f` | `n` | `r` | `t` | `v` | `\` | `'` | `"` ) ;
+
+(* ========================== 9. AUTOMATIC SEMICOLONS ========================== *)
+
+(* An automatic semicolon is inserted after a line's final token if that token is:
+   1. An IDENT
+   2. An INT, FLOAT, or STRING literal
+   3. One of the keywords: return, break, continue
+   4. One of the operators/delimiters: ++, --, ), ], }
+*)
