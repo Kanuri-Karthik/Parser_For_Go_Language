@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: parser-for-go-language
+    runtime: go
+    repo: https://github.com/Kanuri-Karthik/Parser_For_Go_Language
+    branch: main
+    buildCommand: go build -o parser .
+    startCommand: ./parser -serve :$PORT
+    envVars:
+      - key: GO_VERSION
+        value: 1.22.6
+    healthCheckPath: /
+    plan: free
